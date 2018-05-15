@@ -1,0 +1,60 @@
+FROM registry.access.redhat.com/rhel7
+ARG version=12.2.1.3.0  
+COPY weblogic.rsp  /tmp  
+COPY oraInst.loc /tmp  
+COPY fmw_${version}_wls.jar /tmp  
+
+RUN mkdir -p /u01/oracle && \   
+    chmod a+xr /u01 && \
+    useradd -b /u01 -M -s /bin/bash oracle && \
+    chown oracle:oracle -R /u01 && \
+    echo oracle:oracle | chpasswd 
+
+COPY configure.py /u01/oracle  
+
+ENV JAVA_RPM=jdk-8u171-linux-x64.rpm
+ENV JAVA_HOME=/usr/java/default
+
+
+COPY ${JAVA_RPM} /u01/
+
+ENV DOMAIN_NAME=mydomain  
+ENV DOMAIN_HOME=/u01/oracle/user_projects/domains/mydomain \
+    ORACLE_HOME=/u01/oracle \
+    USER_MEM_ARGS="-Djava.security.egd=file:/dev/./urandom" \
+    DEBUG_FLAG=true \
+    PRODUCTION_MODE=dev \
+    ADMIN_PORT="${ADMIN_PORT:-8001}" \
+    PATH=$PATH:/usr/java/default/bin:/u01/oracle/oracle_common/common/bin:/u01/oracle/wlserver/common/bin
+
+
+RUN rpm -i /u01/$JAVA_RPM && \
+    rm /u01/$JAVA_RPM
+
+
+RUN cd /u01 && su -c "java -jar /tmp/fmw_${version}_wls.jar \  
+    -silent -responseFile /tmp/weblogic.rsp -invPtrLoc /tmp/oraInst.loc -jreLoc $JAVA_HOME -ignoreSysPrereqs -force -novalidation ORACLE_HOME=/u01/oracle INSTALL_TYPE=\"WebLogic Server\"" - oracle && \
+    rm /tmp/fmw_${version}_wls.jar /tmp/weblogic.rsp /tmp/oraInst.loc
+
+RUN echo "Domain home $DOMAIN_HOME"
+COPY sample.war $DOMAIN_HOME/autodeploy/sample.war  
+
+ENV ADMIN_PASSWORD=redhat@1
+
+RUN mkdir -p /u01/oracle/user_projects/domains/$DOMAIN_NAME/servers/AdminServer/security && \
+    echo "username=weblogic" > /u01/oracle/user_projects/domains/$DOMAIN_NAME/servers/AdminServer/security/boot.properties && \
+    echo "password=$ADMIN_PASSWORD" >> /u01/oracle/user_projects/domains/$DOMAIN_NAME/servers/AdminServer/security/boot.properties && \
+    echo ". /u01/oracle/user_projects/domains/$DOMAIN_NAME/bin/setDomainEnv.sh" >> /u01/oracle/.bashrc && \
+    find /u01 -user oracle -exec chmod a+rwX /u01 {} ';'
+    
+
+#RUN ADMIN_PASSWORD=$(date| md5sum | fold -w 8 | head -n 1) && \  
+#    echo "      ----> 'weblogic' admin password: $ADMIN_PASSWORD" && \
+RUN    sed -i -e "s|temporarypass|$ADMIN_PASSWORD|g" /u01/oracle/configure.py
+RUN /u01/oracle/oracle_common/common/bin/wlst.sh /u01/oracle/configure.py  
+
+EXPOSE 5556 8001 7001 8453
+
+WORKDIR ${DOMAIN_HOME}
+
+CMD ["/u01/oracle/user_projects/domains/mydomain/startWebLogic.sh"]
